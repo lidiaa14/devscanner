@@ -227,7 +227,12 @@
 </div>
 
 <script>
-const RPC = "https://api.mainnet-beta.solana.com";
+const RPC_ENDPOINTS = [
+  "https://rpc.ankr.com/solana",
+  "https://solana-rpc.publicnode.com",
+  "https://api.mainnet-beta.solana.com"
+];
+let RPC = RPC_ENDPOINTS[0];
 const els = {
   addr: document.getElementById('addr'),
   btn: document.getElementById('scanBtn'),
@@ -257,15 +262,25 @@ function logLine(text, ok=false){
 }
 
 async function rpc(method, params){
-  const res = await fetch(RPC, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc:'2.0', id:1, method, params })
-  });
-  if(!res.ok) throw new Error('rpc http ' + res.status);
-  const json = await res.json();
-  if(json.error) throw new Error(json.error.message || 'rpc error');
-  return json.result;
+  let lastErr;
+  for(const endpoint of RPC_ENDPOINTS){
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc:'2.0', id:1, method, params })
+      });
+      if(!res.ok){ lastErr = new Error('rpc http ' + res.status + ' (' + endpoint + ')'); continue; }
+      const json = await res.json();
+      if(json.error){ lastErr = new Error(json.error.message || 'rpc error'); continue; }
+      RPC = endpoint; // remember the one that worked
+      return json.result;
+    } catch(e){
+      lastErr = e;
+      continue;
+    }
+  }
+  throw lastErr || new Error('all rpc endpoints failed');
 }
 
 function short(a){ return a.slice(0,4) + '…' + a.slice(-4); }
@@ -360,6 +375,53 @@ async function scan(address){
         </div>`).join('');
     }
 
+    // wallet age
+    if(firstTs){
+      const days = Math.floor((Date.now()/1000 - firstTs) / 86400);
+      els.ageBox.innerHTML = `<div class="row"><span class="addr">first seen activity</span><span class="meta">${days}d ago (${new Date(firstTs*1000).toLocaleDateString()})</span></div>`;
+    } else {
+      els.ageBox.innerHTML = `<div class="empty">could not determine wallet age from scanned window.</div>`;
+    }
+
+    // signal heuristic
+    let level = 'low', label = 'no strong signal', note = 'created 0 or few tokens, no unusual concentrated outflow detected in the scanned window. still verify manually — this only looked at the last ' + cap + ' transactions.';
+    const topFlow = sortedFlow[0] ? sortedFlow[0][1] : 0;
+    const walletAgeDays = firstTs ? Math.floor((Date.now()/1000 - firstTs)/86400) : null;
+
+    if(mints.size >= 2 && topFlow > 5){
+      level = 'high'; label = 'multiple mints + concentrated outflow';
+      note = `this wallet created ${mints.size} tokens and moved a large chunk of SOL to one address (${sortedFlow[0][1].toFixed(2)} SOL to ${short(sortedFlow[0][0])}). classic serial-deployer pattern — worth checking that destination's history too.`;
+    } else if(mints.size >= 1 && walletAgeDays !== null && walletAgeDays < 3){
+      level = 'mid'; label = 'fresh wallet + active minting';
+      note = `wallet is only ~${walletAgeDays}d old and already minted a token. not automatically bad, but fresh-wallet-then-mint is a common setup pattern — check funding source manually.`;
+    } else if(mints.size >= 1){
+      level = 'mid'; label = 'has minted before';
+      note = `this address has deployed ${mints.size} token(s) before. no major red flag in outflow pattern, but check the linked mints individually.`;
+    }
+
+    els.signalBox.innerHTML = `<span class="signal ${level}">${level.toUpperCase()} · ${label}</span>`;
+    els.signalNote.textContent = note;
+
+    els.result.classList.add('show');
+  } catch(err){
+    logLine('> error: ' + err.message);
+    logLine('> public RPC might be rate-limiting — wait a bit and retry.');
+  } finally {
+    els.btn.disabled = false;
+  }
+}
+
+els.btn.addEventListener('click', () => {
+  const v = els.addr.value.trim();
+  if(!v) return;
+  scan(v);
+});
+els.addr.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter') els.btn.click();
+});
+</script>
+</body>
+</html>
     // wallet age
     if(firstTs){
       const days = Math.floor((Date.now()/1000 - firstTs) / 86400);
